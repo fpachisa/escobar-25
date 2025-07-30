@@ -1,0 +1,16 @@
+gcloud run deploy rtm-monitor-api \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars OANDA_LIVE_API_KEY="35b7844a1e44c7d82804e1b0e4ba20bb-89b5eb0c7328606b28768055d354c8a8" \
+  --set-env-vars OANDA_LIVE_ACCOUNT_ID_3="001-003-11371179-003"
+
+
+
+#firebase deploy
+# Build the production app
+npm run build
+
+# Deploy to Firebase
+firebase deploy
