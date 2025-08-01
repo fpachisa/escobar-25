@@ -42,8 +42,75 @@ body {
   border: 1px solid #e5e7eb;
   padding: 1rem;
   transition: box-shadow 0.2s;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .rtm-card:hover {
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+/* Mobile optimizations - only apply on smaller screens */
+@media (max-width: 768px) {
+  .rtm-card {
+    padding: 0.75rem;
+  }
+  
+  .rtm-card table {
+    font-size: 0.8125rem;
+  }
+  
+  .rtm-card th,
+  .rtm-card td {
+    padding: 0.5rem 0.375rem;
+  }
+  
+  .rtm-card h3 {
+    font-size: 1rem !important;
+  }
+  
+  /* Make grid responsive for mobile */
+  div[style*="gridTemplateColumns"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .rtm-card {
+    padding: 0.5rem;
+  }
+  
+  .rtm-card table {
+    font-size: 0.75rem;
+  }
+  
+  .rtm-card th,
+  .rtm-card td {
+    padding: 0.375rem 0.25rem;
+  }
+  
+  .tab-button {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.875rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .rtm-card {
+    padding: 0.375rem;
+  }
+  
+  .rtm-card table {
+    font-size: 0.6875rem;
+  }
+  
+  .rtm-card th,
+  .rtm-card td {
+    padding: 0.25rem 0.125rem;
+  }
+  
+  .tab-button {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8125rem;
+  }
 }

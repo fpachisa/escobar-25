@@ -8,7 +8,7 @@ const RTMGrid = ({ category, rtmData, onDataUpdate }) => {
 
   const API_BASE_URL = process.env.NODE_ENV === 'production' 
     ? 'https://rtm-monitor-api-193967718024.us-central1.run.app'  // Replace with your Cloud Run URL
-    : 'http://localhost:8000';
+    : 'http://localhost:8080';
 
   const fetchRTMData = async () => {
     if (!category) return;

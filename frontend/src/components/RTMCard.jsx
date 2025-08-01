@@ -47,6 +47,26 @@ const RTMCard = ({ instrument, rtmValues, error }) => {
 
   const hasDirectionChange = detectDirectionChange(rtmValues);
 
+  const getLastThreeTrend = () => {
+    if (rtmValues.length < 3) return null;
+    
+    const lastThree = rtmValues.slice(-3);
+    
+    // Check if strictly increasing
+    if (lastThree[0] < lastThree[1] && lastThree[1] < lastThree[2]) {
+      return 'increasing';
+    }
+    
+    // Check if strictly decreasing
+    if (lastThree[0] > lastThree[1] && lastThree[1] > lastThree[2]) {
+      return 'decreasing';
+    }
+    
+    return null;
+  };
+
+  const lastThreeTrend = getLastThreeTrend();
+
   return (
     <div 
       className="rtm-card" 
@@ -61,6 +81,22 @@ const RTMCard = ({ instrument, rtmValues, error }) => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <h3 style={{ fontWeight: '600', fontSize: '1.125rem', color: '#1f2937' }}>{instrument}</h3>
+          {lastThreeTrend === 'increasing' && (
+            <span style={{ 
+              fontSize: '1.25rem',
+              color: '#22c55e'
+            }}>
+              ↗️
+            </span>
+          )}
+          {lastThreeTrend === 'decreasing' && (
+            <span style={{ 
+              fontSize: '1.25rem',
+              color: '#ef4444'
+            }}>
+              ↘️
+            </span>
+          )}
           {hasDirectionChange && (
             <span style={{ 
               fontSize: '0.75rem', 
