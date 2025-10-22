@@ -9,16 +9,15 @@ const TabNavigation = ({ activeTab, onTabChange }) => {
   ];
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', gap: '0.25rem', backgroundColor: '#f3f4f6', padding: '0.25rem', borderRadius: '0.5rem', marginBottom: '1.5rem' }}>
+    <div className="tabbar">
       {tabs.map((tab) => (
         <button
           key={tab.id}
           onClick={() => onTabChange(tab.id)}
           className={`tab-button ${activeTab === tab.id ? 'tab-button-active' : 'tab-button-inactive'}`}
-          style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
         >
-          <span style={{ fontSize: '1.125rem' }}>{tab.icon}</span>
-          <span>{tab.label}</span>
+          <span className="tab-icon">{tab.icon}</span>
+          <span className="tab-label">{tab.label}</span>
         </button>
       ))}
     </div>

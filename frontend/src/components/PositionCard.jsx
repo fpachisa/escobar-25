@@ -1,12 +1,15 @@
 import React from 'react';
+import Sparkline from './Sparkline';
 
 const PositionCard = ({ 
   instrument, 
   direction, 
   units,
   unrealized_pnl,
-  rtmValues, 
-  error 
+  rtmH1, 
+  rtmH4,
+  error,
+  bias 
 }) => {
   const formatValue = (value) => {
     if (Math.abs(value) >= 1000) {
@@ -15,69 +18,55 @@ const PositionCard = ({
     return value.toString();
   };
 
-  const detectDirectionChange = (rtmValues) => {
-    if (rtmValues.length < 6) return false;
-    
-    const getSign = (value) => value > 0 ? 1 : value < 0 ? -1 : 0;
-    const signs = rtmValues.map(getSign);
-    
-    // Check pattern 1: First 4 vs Last 2
-    const first4Positive = signs.slice(0, 4).filter(s => s > 0).length;
-    const first4Negative = signs.slice(0, 4).filter(s => s < 0).length;
-    const last2Positive = signs.slice(4).filter(s => s > 0).length;
-    const last2Negative = signs.slice(4).filter(s => s < 0).length;
-    
-    // Pattern 1: Need at least 3 out of 4 same sign, then at least 1 out of 2 opposite sign
-    if ((first4Positive >= 3 && last2Negative >= 1) || (first4Negative >= 3 && last2Positive >= 1)) {
-      return true;
-    }
-    
-    // Check pattern 2: First 3 vs Last 3
-    const first3Positive = signs.slice(0, 3).filter(s => s > 0).length;
-    const first3Negative = signs.slice(0, 3).filter(s => s < 0).length;
-    const last3Positive = signs.slice(3).filter(s => s > 0).length;
-    const last3Negative = signs.slice(3).filter(s => s < 0).length;
-    
-    // Pattern 2: Need at least 2 out of 3 same sign, then at least 2 out of 3 opposite sign
-    if ((first3Positive >= 2 && last3Negative >= 2) || (first3Negative >= 2 && last3Positive >= 2)) {
-      return true;
-    }
-    
-    return false;
+  const getRTMValueClass = (value) => {
+    if (value > 0) return 'rtm-positive';
+    if (value < 0) return 'rtm-negative';
+    return 'rtm-neutral';
   };
 
-  const hasDirectionChange = detectDirectionChange(rtmValues);
-  const pnlColor = unrealized_pnl >= 0 ? '#166534' : '#991b1b';
-  const pnlBgColor = unrealized_pnl >= 0 ? '#dcfce7' : '#fef2f2';
-  const directionColor = direction === 'Long' ? '#166534' : '#991b1b';
-  const directionBgColor = direction === 'Long' ? '#dcfce7' : '#fef2f2';
+  // Check if bias and RTM trend are aligned for highlighting (using H1 data)
+  const getLastThreeTrend = (values) => {
+    if (!values || values.length < 3) return null;
+    const lastThree = values.slice(-3);
+    if (lastThree[0] < lastThree[1] && lastThree[1] < lastThree[2]) return 'increasing';
+    if (lastThree[0] > lastThree[1] && lastThree[1] > lastThree[2]) return 'decreasing';
+    return null;
+  };
+  
+  const h1Trend = getLastThreeTrend(rtmH1);
+  
+  // Highlight based on H1 data alignment with bias
+  const shouldHighlight = () => {
+    if (!bias || !h1Trend) return false;
+    return (bias === 'Up' && h1Trend === 'increasing') || 
+           (bias === 'Down' && h1Trend === 'decreasing');
+  };
+
+  const isHighlighted = shouldHighlight();
+  const pnlColor = unrealized_pnl >= 0 ? 'var(--green-700)' : 'var(--red-700)';
+  const pnlBgColor = unrealized_pnl >= 0 ? 'var(--green-50)' : 'var(--red-50)';
+  const directionColor = direction === 'Long' ? 'var(--green-700)' : 'var(--red-700)';
+  const directionBgColor = direction === 'Long' ? 'var(--green-50)' : 'var(--red-50)';
+
 
   return (
     <div 
       className="rtm-card" 
-      style={{ 
-        ...(hasDirectionChange && {
-          border: '2px solid #f59e0b',
-          boxShadow: '0 4px 6px -1px rgba(245, 158, 11, 0.2)'
+      style={{
+        ...(isHighlighted && bias === 'Up' && {
+          border: '2px solid var(--green-500)',
+          boxShadow: 'var(--shadow-green)'
+        }),
+        ...(isHighlighted && bias === 'Down' && {
+          border: '2px solid var(--red-500)',
+          boxShadow: 'var(--shadow-red)'
         })
       }}
     >
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <h3 style={{ fontWeight: '600', fontSize: '1.125rem', color: '#1f2937' }}>{instrument}</h3>
-          {hasDirectionChange && (
-            <span style={{ 
-              fontSize: '0.75rem', 
-              color: '#f59e0b', 
-              backgroundColor: '#fef3c7', 
-              padding: '0.25rem 0.5rem', 
-              borderRadius: '0.25rem',
-              fontWeight: '600'
-            }}>
-              🔄 Direction Change
-            </span>
-          )}
+      <div className="card-header">
+        <div className="card-title">
+          <h3>{instrument}</h3>
         </div>
       </div>
 
@@ -122,40 +111,50 @@ const PositionCard = ({
         </div>
       </div>
       
-      {/* RTM Table */}
-      <div style={{ overflow: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
-          <thead>
-            <tr style={{ backgroundColor: '#f8fafc' }}>
-              <th style={{ padding: '0.5rem', textAlign: 'center', fontWeight: '600', color: '#374151', border: '1px solid #e5e7eb' }}>RTM-6</th>
-              <th style={{ padding: '0.5rem', textAlign: 'center', fontWeight: '600', color: '#374151', border: '1px solid #e5e7eb' }}>RTM-5</th>
-              <th style={{ padding: '0.5rem', textAlign: 'center', fontWeight: '600', color: '#374151', border: '1px solid #e5e7eb' }}>RTM-4</th>
-              <th style={{ padding: '0.5rem', textAlign: 'center', fontWeight: '600', color: '#374151', border: '1px solid #e5e7eb' }}>RTM-3</th>
-              <th style={{ padding: '0.5rem', textAlign: 'center', fontWeight: '600', color: '#374151', border: '1px solid #e5e7eb' }}>RTM-2</th>
-              <th style={{ padding: '0.5rem', textAlign: 'center', fontWeight: '600', color: '#374151', border: '1px solid #e5e7eb' }}>RTM-1</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              {rtmValues.map((value, index) => (
-                <td
-                  key={index}
-                  style={{
-                    padding: '0.75rem 0.5rem',
-                    textAlign: 'center',
-                    fontWeight: '500',
-                    border: '1px solid #e5e7eb',
-                    backgroundColor: value > 0 ? '#dcfce7' : value < 0 ? '#fef2f2' : '#f3f4f6',
-                    color: value > 0 ? '#166534' : value < 0 ? '#991b1b' : '#374151'
-                  }}
-                  title={`RTM ${6-index}: ${value}`}
-                >
-                  {formatValue(value)}
-                </td>
-              ))}
-            </tr>
-          </tbody>
-        </table>
+      {/* H1-20EMA Timeframe (Top) */}
+      <div className="timeframe-section">
+        <div className="timeframe-label">H1 - 20EMA</div>
+        
+        {/* H1-20EMA Sparkline */}
+        <div className="sparkline">
+          <Sparkline values={rtmH1 || []} />
+        </div>
+
+        {/* H1-20EMA RTM chips */}
+        <div className="chips">
+          {(rtmH1 || []).map((value, idx) => (
+            <span
+              key={`h1-20-${idx}`}
+              className={`chip ${getRTMValueClass(value)}`}
+              title={`H1-20EMA RTM ${6 - idx}: ${value}`}
+            >
+              {formatValue(value)}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* H1-34EMA Timeframe (Bottom) */}
+      <div className="timeframe-section">
+        <div className="timeframe-label">H1 - 34EMA</div>
+        
+        {/* H1-34EMA Sparkline */}
+        <div className="sparkline">
+          <Sparkline values={rtmH4 || []} />
+        </div>
+
+        {/* H1-34EMA RTM chips */}
+        <div className="chips">
+          {(rtmH4 || []).map((value, idx) => (
+            <span
+              key={`h1-34-${idx}`}
+              className={`chip ${getRTMValueClass(value)}`}
+              title={`H1-34EMA RTM ${6 - idx}: ${value}`}
+            >
+              {formatValue(value)}
+            </span>
+          ))}
+        </div>
       </div>
       
       {/* Footer - Only show error if present */}

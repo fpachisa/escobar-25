@@ -25,31 +25,32 @@ function App() {
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f9fafb' }}>
       {/* Header */}
-      <header style={{ backgroundColor: 'white', boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)', borderBottom: '1px solid #e5e7eb' }}>
-        <div style={{ maxWidth: '80rem', margin: '0 auto', padding: '0 1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '4rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <div style={{ fontSize: '1.5rem' }}>📊</div>
-              <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#111827' }}>RTM Monitor</h1>
+      <header className="app-header">
+        <div className="app-header-inner">
+          <div className="brand">
+            <div className="brand-icon">📊</div>
+            <div>
+              <h1>RTM Monitor</h1>
+              <div className="subtitle">Return-to-Mean Signals for OANDA instruments</div>
             </div>
-            <div style={{ fontSize: '0.875rem', color: '#6b7280', textAlign: 'right' }}>
-              {getCurrentData().lastUpdated ? (
-                <div>
-                  <div>Last Updated:</div>
-                  <div style={{ fontWeight: '500' }}>
-                    {new Date(getCurrentData().lastUpdated).toLocaleDateString()} {new Date(getCurrentData().lastUpdated).toLocaleTimeString()}
-                  </div>
+          </div>
+          <div className="status">
+            {getCurrentData().lastUpdated ? (
+              <div>
+                <div className="label">Last Updated</div>
+                <div className="value">
+                  {new Date(getCurrentData().lastUpdated).toLocaleDateString()} {new Date(getCurrentData().lastUpdated).toLocaleTimeString()}
                 </div>
-              ) : (
-                <div>Real-time RTM Analysis</div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div className="value">Real-time RTM Analysis</div>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main style={{ maxWidth: '80rem', margin: '0 auto', padding: '2rem 1rem' }}>
+      <main className="container">
         {/* Tab Navigation */}
         <TabNavigation
           activeTab={activeTab}
@@ -65,12 +66,8 @@ function App() {
       </main>
 
       {/* Footer */}
-      <footer style={{ backgroundColor: 'white', borderTop: '1px solid #e5e7eb', marginTop: '4rem' }}>
-        <div style={{ maxWidth: '80rem', margin: '0 auto', padding: '1rem' }}>
-          <div style={{ textAlign: 'center', fontSize: '0.875rem', color: '#6b7280' }}>
-            Escobar by Farhat
-          </div>
-        </div>
+      <footer className="app-footer">
+        <div className="app-footer-inner">Escobar by Farhat</div>
       </footer>
     </div>
   )
