@@ -11,13 +11,24 @@ from datetime import datetime
 from dotenv import load_dotenv
 from google.cloud import storage
 import io
+import anthropic
+from google import genai
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Silence noisy third-party loggers
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('google_genai').setLevel(logging.WARNING)
 
 app = FastAPI(title="RTM Monitor API", version="1.0.0")
 
@@ -41,6 +52,24 @@ app.add_middleware(
 OANDA_API_KEY = os.environ.get("OANDA_LIVE_API_KEY")
 OANDA_ACCOUNT_ID = os.environ.get("OANDA_LIVE_ACCOUNT_ID_3")
 OANDA_URL = "https://api-fxtrade.oanda.com"
+
+# AI Configuration
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "gemini")  # claude or gemini
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+AI_MODEL = os.environ.get("AI_MODEL")  # Optional: specific model version
+
+# Initialize AI clients
+anthropic_client = None
+gemini_client = None
+
+if AI_PROVIDER == "claude" and ANTHROPIC_API_KEY:
+    anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    logger.info("Claude AI client initialized")
+
+if AI_PROVIDER == "gemini" and GOOGLE_API_KEY:
+    gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+    logger.info("Gemini AI client initialized")
 
 # Google Cloud Storage configuration
 GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "escobar-analysis-data")
@@ -66,121 +95,6 @@ def load_symbols():
     except FileNotFoundError:
         logger.error("symbol.json not found")
         return {"currencies": [], "indices": [], "commodities": []}
-
-# Global variable to cache analysis data
-_analysis_data_cache = None
-_analysis_cache_timestamp = None
-
-def load_analysis_data():
-    """Load analysis data from Google Cloud Storage or local file with caching"""
-    global _analysis_data_cache, _analysis_cache_timestamp
-    
-    try:
-        # Try local file first for development
-        local_file_path = 'Analysis.xlsx'
-        if os.path.exists(local_file_path):
-            logger.info("Loading analysis data from local file for development")
-            
-            # Check file modification time for caching
-            file_stat = os.stat(local_file_path)
-            file_updated = datetime.fromtimestamp(file_stat.st_mtime)
-            
-            if (_analysis_data_cache is None or 
-                _analysis_cache_timestamp is None or 
-                file_updated > _analysis_cache_timestamp):
-                
-                # Read local Excel file
-                df = pd.read_excel(local_file_path)
-                
-                # Validate and process (same logic as GCS version)
-                required_columns = ['Date', 'Instrument', 'Bias']
-                if not all(col in df.columns for col in required_columns):
-                    logger.error(f"Analysis file missing required columns: {required_columns}")
-                    return {}
-                
-                # Get the latest date's data
-                latest_date = df['Date'].max()
-                latest_data = df[df['Date'] == latest_date]
-                
-                # Create instrument -> bias mapping
-                bias_mapping = {}
-                for _, row in latest_data.iterrows():
-                    instrument = row['Instrument']
-                    bias = row['Bias']
-                    if bias in ['Up', 'Down', 'Hold']:
-                        bias_mapping[instrument] = bias
-                    else:
-                        logger.warning(f"Invalid bias value '{bias}' for {instrument}")
-                
-                # Update cache
-                _analysis_data_cache = bias_mapping
-                _analysis_cache_timestamp = file_updated
-                
-                logger.info(f"Loaded {len(bias_mapping)} bias mappings from local analysis data")
-                
-            return _analysis_data_cache
-        
-        # Try GCS for production
-        try:
-            # Initialize GCS client
-            client = storage.Client()
-            bucket = client.bucket(GCS_BUCKET_NAME)
-            blob = bucket.blob(ANALYSIS_FILE_NAME)
-            
-            # Check if file exists
-            if not blob.exists():
-                logger.warning(f"Analysis file {ANALYSIS_FILE_NAME} not found in bucket {GCS_BUCKET_NAME}")
-                return {}
-            
-            # Check if we need to refresh cache (file updated or cache empty)
-            file_updated = blob.updated
-            if (_analysis_data_cache is None or 
-                _analysis_cache_timestamp is None or 
-                file_updated > _analysis_cache_timestamp):
-                
-                logger.info(f"Loading analysis data from GCS bucket: {GCS_BUCKET_NAME}")
-                
-                # Download file content
-                content = blob.download_as_bytes()
-                
-                # Read Excel file from bytes
-                df = pd.read_excel(io.BytesIO(content))
-                
-                # Validate required columns
-                required_columns = ['Date', 'Instrument', 'Bias']
-                if not all(col in df.columns for col in required_columns):
-                    logger.error(f"Analysis file missing required columns: {required_columns}")
-                    return {}
-                
-                # Get the latest date's data (assuming sorted by date descending)
-                latest_date = df['Date'].max()
-                latest_data = df[df['Date'] == latest_date]
-                
-                # Create instrument -> bias mapping
-                bias_mapping = {}
-                for _, row in latest_data.iterrows():
-                    instrument = row['Instrument']
-                    bias = row['Bias']
-                    if bias in ['Up', 'Down', 'Hold']:
-                        bias_mapping[instrument] = bias
-                    else:
-                        logger.warning(f"Invalid bias value '{bias}' for {instrument}")
-                
-                # Update cache
-                _analysis_data_cache = bias_mapping
-                _analysis_cache_timestamp = file_updated
-                
-                logger.info(f"Loaded {len(bias_mapping)} bias mappings from GCS analysis data")
-                
-            return _analysis_data_cache
-            
-        except Exception as gcs_error:
-            logger.warning(f"Could not load from GCS, falling back to empty bias data: {gcs_error}")
-            return {}
-        
-    except Exception as e:
-        logger.error(f"Error loading analysis data: {e}")
-        return {}
 
 class DirectionChange:
     def __init__(self, api_token: str, symbol: str):
@@ -313,74 +227,236 @@ class DirectionChange:
         except Exception as e:
             logger.error(f"Error calculating EMA gradient: {e}")
 
-def calculate_rtm_values_for_symbol(symbol: str) -> dict:
-    """Calculate last 6 RTM values for a symbol for both H1 and H4 timeframes"""
+def analyze_daily_market_condition(instrument: str, rtm_d1_20: List[int], rtm_d1_34: List[int]) -> dict:
+    """
+    Use AI to analyze daily market condition based on RTM values
+    Returns: {"condition": "...", "reasoning": "...", "analyzed_at": "..."}
+    """
     try:
+        # Skip analysis if no AI provider is configured
+        if not AI_PROVIDER or (AI_PROVIDER == "claude" and not ANTHROPIC_API_KEY) or (AI_PROVIDER == "gemini" and not GOOGLE_API_KEY):
+            logger.warning(f"AI provider not configured, skipping analysis for {instrument}")
+            return {
+                "condition": "Analysis Unavailable",
+                "reasoning": "AI provider not configured. Please set AI_PROVIDER and corresponding API key.",
+                "analyzed_at": datetime.now().isoformat()
+            }
+
+        # Prepare the prompt
+        prompt = f"""Analyze these daily RTM (Return-to-Mean) values for {instrument}:
+- D1-20EMA (last 20 days): {rtm_d1_20}
+- D1-34EMA (last 20 days): {rtm_d1_34}
+
+RTM Scale: -100 to +100 (negative = price below EMA, positive = price above EMA)
+
+Determine the current daily market condition by analyzing patterns, momentum, and trend:
+1. "Trending Up" - consistent upward momentum, price staying above EMAs
+2. "Trending Down" - consistent downward momentum, price staying below EMAs
+3. "Ranging" - sideways movement, oscillating around EMAs with no clear direction
+4. "Direction Change Imminent" - clear signs of reversal (crossing EMAs, divergence, momentum shift)
+
+Provide:
+1. Condition: exactly one of the four options above
+2. Reasoning: brief 2-3 sentence explanation focusing on the pattern and key signals you observe
+
+Respond ONLY with valid JSON in this format:
+{{"condition": "one of the four conditions", "reasoning": "your brief analysis"}}"""
+
+        # Call appropriate AI provider
+        if AI_PROVIDER == "claude":
+            model = AI_MODEL or "claude-3-5-sonnet-20241022"
+            response = anthropic_client.messages.create(
+                model=model,
+                max_tokens=3000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            ai_response = response.content[0].text
+
+        elif AI_PROVIDER == "gemini":
+            model_name = AI_MODEL or "gemini-2.5-flash"
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            ai_response = response.text
+
+        else:
+            raise ValueError(f"Unknown AI provider: {AI_PROVIDER}")
+
+        # Parse JSON response
+        # Remove markdown code blocks if present
+        ai_response = ai_response.strip()
+        if ai_response.startswith("```json"):
+            ai_response = ai_response[7:]
+        if ai_response.startswith("```"):
+            ai_response = ai_response[3:]
+        if ai_response.endswith("```"):
+            ai_response = ai_response[:-3]
+        ai_response = ai_response.strip()
+
+        result = json.loads(ai_response)
+        result["analyzed_at"] = datetime.now().isoformat()
+
+        logger.info(f"AI analysis for {instrument}: {result['condition']}")
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse AI response for {instrument}: {e}")
+        return {
+            "condition": "Analysis Error",
+            "reasoning": "Failed to parse AI response. Please try again.",
+            "analyzed_at": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error analyzing daily condition for {instrument}: {e}")
+        return {
+            "condition": "Analysis Error",
+            "reasoning": f"Error during analysis: {str(e)}",
+            "analyzed_at": datetime.now().isoformat()
+        }
+
+def calculate_rtm_values_for_symbol(symbol: str) -> dict:
+    """Calculate RTM values for a symbol for H1 (6 candles) and D1 (20 candles) timeframes"""
+    try:
+        logger.info(f"Analyzing {symbol}...")
         signal_generator = DirectionChange(OANDA_API_KEY, symbol)
-        
+
         # Initialize result structure
         result = {
             "rtm_h1_20": [],
-            "rtm_h1_34": []
+            "rtm_h1_34": [],
+            "rtm_d1_20": [],
+            "rtm_d1_34": []
         }
-        
-        # Calculate H1 RTM values
+
+        # Calculate H1-20EMA RTM values (last 6)
         try:
             hourly_data_20 = signal_generator.fetch_historical_data("H1", 100)
             if not hourly_data_20.empty:
                 # Calculate EMA for H1
                 hourly_data_20['ema_short'] = signal_generator.calculate_ema(hourly_data_20['close_price'], 20)
-                
+
                 if not hourly_data_20['ema_short'].empty:
                     # Calculate gradient and RTM for H1 20 EMA
                     signal_generator.calculate_ema_gradient(hourly_data_20)
-                    
+
                     if 'RTM' in hourly_data_20.columns and len(hourly_data_20) >= 6:
                         result["rtm_h1_20"] = hourly_data_20['RTM'].iloc[-6:].values.tolist()
                     else:
-                        logger.warning(f"Insufficient H1 data for RTM analysis for {symbol}")
+                        logger.warning(f"Insufficient H1-20 data for RTM analysis for {symbol}")
                         result["rtm_h1_20"] = [0] * 6
                 else:
-                    logger.warning(f"H1 EMA calculation failed for {symbol}")
+                    logger.warning(f"H1-20 EMA calculation failed for {symbol}")
                     result["rtm_h1_20"] = [0] * 6
             else:
-                logger.warning(f"No H1 historical data available for {symbol}")
+                logger.warning(f"No H1-20 historical data available for {symbol}")
                 result["rtm_h1_20"] = [0] * 6
-        except Exception as h1_error:
-            logger.error(f"Error calculating H1 RTM for {symbol}: {h1_error}")
+        except Exception as h1_20_error:
+            logger.error(f"Error calculating H1-20 RTM for {symbol}: {h1_20_error}")
             result["rtm_h1_20"] = [0] * 6
-        
-        # Calculate H4 RTM values
+
+        # Calculate H1-34EMA RTM values (last 6)
         try:
             hourly_data_34 = signal_generator.fetch_historical_data("H1", 100)
             if not hourly_data_34.empty:
-                # Calculate EMA for H4
+                # Calculate EMA for H1-34
                 hourly_data_34['ema_short'] = signal_generator.calculate_ema(hourly_data_34['close_price'], 34)
-                
+
                 if not hourly_data_34['ema_short'].empty:
-                    # Calculate gradient and RTM for H4
+                    # Calculate gradient and RTM for H1-34
                     signal_generator.calculate_ema_gradient(hourly_data_34)
-                    
+
                     if 'RTM' in hourly_data_34.columns and len(hourly_data_34) >= 6:
                         result["rtm_h1_34"] = hourly_data_34['RTM'].iloc[-6:].values.tolist()
                     else:
-                        logger.warning(f"Insufficient H4 data for RTM analysis for {symbol}")
+                        logger.warning(f"Insufficient H1-34 data for RTM analysis for {symbol}")
                         result["rtm_h1_34"] = [0] * 6
                 else:
-                    logger.warning(f"H4 EMA calculation failed for {symbol}")
+                    logger.warning(f"H1-34 EMA calculation failed for {symbol}")
                     result["rtm_h1_34"] = [0] * 6
             else:
-                logger.warning(f"No H4 historical data available for {symbol}")
+                logger.warning(f"No H1-34 historical data available for {symbol}")
                 result["rtm_h1_34"] = [0] * 6
-        except Exception as h4_error:
-            logger.error(f"Error calculating H4 RTM for {symbol}: {h4_error}")
+        except Exception as h1_34_error:
+            logger.error(f"Error calculating H1-34 RTM for {symbol}: {h1_34_error}")
             result["rtm_h1_34"] = [0] * 6
-        
+
+        # Calculate D1-20EMA RTM values (last 20)
+        try:
+            daily_data_20 = signal_generator.fetch_historical_data("D", 120)
+            if not daily_data_20.empty:
+                # Calculate 20-period EMA for Daily
+                daily_data_20['ema_short'] = signal_generator.calculate_ema(daily_data_20['close_price'], 20)
+
+                if not daily_data_20['ema_short'].empty:
+                    # Calculate gradient and RTM for D1-20
+                    signal_generator.calculate_ema_gradient(daily_data_20)
+
+                    if 'RTM' in daily_data_20.columns and len(daily_data_20) >= 20:
+                        result["rtm_d1_20"] = daily_data_20['RTM'].iloc[-20:].values.tolist()
+                    else:
+                        logger.warning(f"Insufficient D1-20 data for RTM analysis for {symbol}")
+                        result["rtm_d1_20"] = [0] * 20
+                else:
+                    logger.warning(f"D1-20 EMA calculation failed for {symbol}")
+                    result["rtm_d1_20"] = [0] * 20
+            else:
+                logger.warning(f"No D1-20 historical data available for {symbol}")
+                result["rtm_d1_20"] = [0] * 20
+        except Exception as d1_20_error:
+            logger.error(f"Error calculating D1-20 RTM for {symbol}: {d1_20_error}")
+            result["rtm_d1_20"] = [0] * 20
+
+        # Calculate D1-34EMA RTM values (last 20)
+        try:
+            daily_data_34 = signal_generator.fetch_historical_data("D", 120)
+            if not daily_data_34.empty:
+                # Calculate 34-period EMA for Daily
+                daily_data_34['ema_short'] = signal_generator.calculate_ema(daily_data_34['close_price'], 34)
+
+                if not daily_data_34['ema_short'].empty:
+                    # Calculate gradient and RTM for D1-34
+                    signal_generator.calculate_ema_gradient(daily_data_34)
+
+                    if 'RTM' in daily_data_34.columns and len(daily_data_34) >= 20:
+                        result["rtm_d1_34"] = daily_data_34['RTM'].iloc[-20:].values.tolist()
+                    else:
+                        logger.warning(f"Insufficient D1-34 data for RTM analysis for {symbol}")
+                        result["rtm_d1_34"] = [0] * 20
+                else:
+                    logger.warning(f"D1-34 EMA calculation failed for {symbol}")
+                    result["rtm_d1_34"] = [0] * 20
+            else:
+                logger.warning(f"No D1-34 historical data available for {symbol}")
+                result["rtm_d1_34"] = [0] * 20
+        except Exception as d1_34_error:
+            logger.error(f"Error calculating D1-34 RTM for {symbol}: {d1_34_error}")
+            result["rtm_d1_34"] = [0] * 20
+
+        # Perform AI analysis on daily data
+        daily_analysis = analyze_daily_market_condition(
+            symbol,
+            result["rtm_d1_20"],
+            result["rtm_d1_34"]
+        )
+        result["daily_condition"] = daily_analysis.get("condition", "Analysis Unavailable")
+        result["daily_reasoning"] = daily_analysis.get("reasoning", "No reasoning available")
+        result["daily_analyzed_at"] = daily_analysis.get("analyzed_at", datetime.now().isoformat())
+
+        logger.info(f"✓ Completed {symbol} - Condition: {result['daily_condition']}")
         return result
-        
+
     except Exception as e:
         logger.error(f"Error calculating RTM for {symbol}: {e}")
-        return {"rtm_h1_20": [0] * 6, "rtm_h1_34": [0] * 6}
+        return {
+            "rtm_h1_20": [0] * 6,
+            "rtm_h1_34": [0] * 6,
+            "rtm_d1_20": [0] * 20,
+            "rtm_d1_34": [0] * 20,
+            "daily_condition": "Analysis Error",
+            "daily_reasoning": f"Error: {str(e)}",
+            "daily_analyzed_at": datetime.now().isoformat()
+        }
 
 def detect_direction_change(rtm_values: List[int]) -> bool:
     """
@@ -400,11 +476,7 @@ def detect_direction_change(rtm_values: List[int]) -> bool:
     
     # Get signs of all RTM values
     signs = [get_sign(val) for val in rtm_values]
-    
-    # Debug logging
-    logger.debug(f"RTM values: {rtm_values}")
-    logger.debug(f"Signs: {signs}")
-    
+
     # Check pattern 1: First 4 vs Last 2
     first_4_signs = signs[:4]
     last_2_signs = signs[4:]
@@ -419,13 +491,11 @@ def detect_direction_change(rtm_values: List[int]) -> bool:
     # Pattern 1: First 4 predominantly positive, last 2 predominantly negative
     # Need at least 3 out of 4 positive AND at least 1 out of 2 negative
     if first_4_positive >= 3 and last_2_negative >= 1:
-        logger.debug("Direction change detected - Pattern 1: First 4 positive, last 2 negative")
         return True
-    
-    # Pattern 1: First 4 predominantly negative, last 2 predominantly positive  
+
+    # Pattern 1: First 4 predominantly negative, last 2 predominantly positive
     # Need at least 3 out of 4 negative AND at least 1 out of 2 positive
     if first_4_negative >= 3 and last_2_positive >= 1:
-        logger.debug("Direction change detected - Pattern 1: First 4 negative, last 2 positive")
         return True
     
     # Check pattern 2: First 3 vs Last 3
@@ -441,71 +511,14 @@ def detect_direction_change(rtm_values: List[int]) -> bool:
     # Pattern 2: First 3 predominantly positive, last 3 predominantly negative
     # Need at least 2 out of 3 positive AND at least 2 out of 3 negative
     if first_3_positive >= 2 and last_3_negative >= 2:
-        logger.debug("Direction change detected - Pattern 2: First 3 positive, last 3 negative")
         return True
-    
+
     # Pattern 2: First 3 predominantly negative, last 3 predominantly positive
     # Need at least 2 out of 3 negative AND at least 2 out of 3 positive
     if first_3_negative >= 2 and last_3_positive >= 2:
-        logger.debug("Direction change detected - Pattern 2: First 3 negative, last 3 positive")
         return True
     
     return False
-
-def sort_instruments_by_bias_and_direction_change(rtm_data: List[Dict]) -> List[Dict]:
-    """Sort instruments by bias first, then by direction change within each bias group"""
-    # Load bias data
-    bias_mapping = load_analysis_data()
-    
-    # Categorize instruments by bias
-    up_bias = []
-    down_bias = []
-    hold_bias = []
-    no_bias = []
-    
-    for item in rtm_data:
-        instrument = item["instrument"]
-        bias = bias_mapping.get(instrument)
-        
-        # Add bias information to the item
-        item["bias"] = bias
-        
-        if bias == "Up":
-            up_bias.append(item)
-        elif bias == "Down":
-            down_bias.append(item)
-        elif bias == "Hold":
-            hold_bias.append(item)
-        else:
-            no_bias.append(item)
-    
-    # Sort each bias group by direction change first, then by instrument name
-    def sort_by_direction_change_and_name(items):
-        direction_change_items = []
-        normal_items = []
-        
-        for item in items:
-            # Use H1 data for direction change detection (highlighting)
-            h1_rtm_values = item.get("rtm_h1_20", [])
-            if h1_rtm_values and detect_direction_change(h1_rtm_values):
-                direction_change_items.append(item)
-            else:
-                normal_items.append(item)
-        
-        # Sort each group by instrument name
-        direction_change_items.sort(key=lambda x: x["instrument"])
-        normal_items.sort(key=lambda x: x["instrument"])
-        
-        return direction_change_items + normal_items
-    
-    # Sort each bias group
-    sorted_up_bias = sort_by_direction_change_and_name(up_bias)
-    sorted_down_bias = sort_by_direction_change_and_name(down_bias)
-    sorted_hold_bias = sort_by_direction_change_and_name(hold_bias)
-    sorted_no_bias = sort_by_direction_change_and_name(no_bias)
-    
-    # Return in order: Up bias, Down bias, Hold bias, No bias
-    return sorted_up_bias + sorted_down_bias + sorted_hold_bias + sorted_no_bias
 
 def get_open_positions() -> List[Dict]:
     """Get all open positions from OANDA using your original logic"""
@@ -547,68 +560,37 @@ async def startup_event():
 async def health_check():
     return {"status": "healthy", "message": "RTM Monitor API is running"}
 
-@app.get("/api/analysis")
-async def get_analysis_data():
-    """Get current bias analysis data"""
-    try:
-        bias_mapping = load_analysis_data()
-        
-        # Group by bias for frontend
-        bias_groups = {
-            "up": [],
-            "down": [],
-            "hold": []
-        }
-        
-        for instrument, bias in bias_mapping.items():
-            if bias == "Up":
-                bias_groups["up"].append(instrument)
-            elif bias == "Down":
-                bias_groups["down"].append(instrument)
-            elif bias == "Hold":
-                bias_groups["hold"].append(instrument)
-        
-        return {
-            "bias_mapping": bias_mapping,
-            "bias_groups": bias_groups,
-            "total_instruments": len(bias_mapping),
-            "last_updated": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error fetching analysis data: {e}")
-        return {
-            "bias_mapping": {},
-            "bias_groups": {"up": [], "down": [], "hold": []},
-            "total_instruments": 0,
-            "error": str(e)
-        }
-
 @app.get("/api/rtm/currencies")
 async def get_currencies_rtm():
     """Get RTM data for all currency pairs"""
     symbols = load_symbols()
     currencies = symbols.get("currencies", [])
-    
+    logger.info(f"Fetching RTM data for {len(currencies)} currencies")
+
     rtm_data = []
     for symbol in currencies:
         if oanda_configured:
-            # Real data from OANDA for both H1 and H4 timeframes
+            # Real data from OANDA for H1 and D1 timeframes with AI analysis
             rtm_result = calculate_rtm_values_for_symbol(symbol)
             rtm_data.append({
                 "instrument": symbol,
                 "rtm_h1_20": rtm_result.get("rtm_h1_20", [0] * 6),
                 "rtm_h1_34": rtm_result.get("rtm_h1_34", [0] * 6),
+                "rtm_d1_20": rtm_result.get("rtm_d1_20", [0] * 20),
+                "rtm_d1_34": rtm_result.get("rtm_d1_34", [0] * 20),
+                "daily_condition": rtm_result.get("daily_condition", "Analysis Unavailable"),
+                "daily_reasoning": rtm_result.get("daily_reasoning", "No reasoning available"),
+                "daily_analyzed_at": rtm_result.get("daily_analyzed_at", datetime.now().isoformat()),
                 "last_updated": datetime.now().isoformat(),
-                "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34")) else "Failed to fetch data"
+                "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34") and rtm_result.get("rtm_d1_20") and rtm_result.get("rtm_d1_34")) else "Failed to fetch data"
             })
-    
-    # Sort instruments by bias and direction changes (using H1 data)
-    sorted_rtm_data = sort_instruments_by_bias_and_direction_change(rtm_data)
-    
+
+    # Sort instruments alphabetically
+    rtm_data.sort(key=lambda x: x["instrument"])
+
     return {
         "category": "currencies",
-        "data": sorted_rtm_data,
+        "data": rtm_data,
         "total_instruments": len(currencies)
     }
 
@@ -617,26 +599,32 @@ async def get_indices_rtm():
     """Get RTM data for all indices"""
     symbols = load_symbols()
     indices = symbols.get("indices", [])
-    
+    logger.info(f"Fetching RTM data for {len(indices)} indices")
+
     rtm_data = []
     for symbol in indices:
         if oanda_configured:
-            # Real data from OANDA for both H1 and H4 timeframes
+            # Real data from OANDA for H1 and D1 timeframes with AI analysis
             rtm_result = calculate_rtm_values_for_symbol(symbol)
             rtm_data.append({
                 "instrument": symbol,
                 "rtm_h1_20": rtm_result.get("rtm_h1_20", [0] * 6),
                 "rtm_h1_34": rtm_result.get("rtm_h1_34", [0] * 6),
+                "rtm_d1_20": rtm_result.get("rtm_d1_20", [0] * 20),
+                "rtm_d1_34": rtm_result.get("rtm_d1_34", [0] * 20),
+                "daily_condition": rtm_result.get("daily_condition", "Analysis Unavailable"),
+                "daily_reasoning": rtm_result.get("daily_reasoning", "No reasoning available"),
+                "daily_analyzed_at": rtm_result.get("daily_analyzed_at", datetime.now().isoformat()),
                 "last_updated": datetime.now().isoformat(),
-                "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34")) else "Failed to fetch data"
+                "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34") and rtm_result.get("rtm_d1_20") and rtm_result.get("rtm_d1_34")) else "Failed to fetch data"
             })
-    
-    # Sort instruments by bias and direction changes (using H1 data)
-    sorted_rtm_data = sort_instruments_by_bias_and_direction_change(rtm_data)
-    
+
+    # Sort instruments alphabetically
+    rtm_data.sort(key=lambda x: x["instrument"])
+
     return {
         "category": "indices",
-        "data": sorted_rtm_data,
+        "data": rtm_data,
         "total_instruments": len(indices)
     }
 
@@ -645,26 +633,32 @@ async def get_commodities_rtm():
     """Get RTM data for all commodities"""
     symbols = load_symbols()
     commodities = symbols.get("commodities", [])
-    
+    logger.info(f"Fetching RTM data for {len(commodities)} commodities")
+
     rtm_data = []
     for symbol in commodities:
         if oanda_configured:
-            # Real data from OANDA for both H1 and H4 timeframes
+            # Real data from OANDA for H1 and D1 timeframes with AI analysis
             rtm_result = calculate_rtm_values_for_symbol(symbol)
             rtm_data.append({
                 "instrument": symbol,
                 "rtm_h1_20": rtm_result.get("rtm_h1_20", [0] * 6),
                 "rtm_h1_34": rtm_result.get("rtm_h1_34", [0] * 6),
+                "rtm_d1_20": rtm_result.get("rtm_d1_20", [0] * 20),
+                "rtm_d1_34": rtm_result.get("rtm_d1_34", [0] * 20),
+                "daily_condition": rtm_result.get("daily_condition", "Analysis Unavailable"),
+                "daily_reasoning": rtm_result.get("daily_reasoning", "No reasoning available"),
+                "daily_analyzed_at": rtm_result.get("daily_analyzed_at", datetime.now().isoformat()),
                 "last_updated": datetime.now().isoformat(),
-                "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34")) else "Failed to fetch data"
+                "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34") and rtm_result.get("rtm_d1_20") and rtm_result.get("rtm_d1_34")) else "Failed to fetch data"
             })
-    
-    # Sort instruments by bias and direction changes (using H1 data)
-    sorted_rtm_data = sort_instruments_by_bias_and_direction_change(rtm_data)
-    
+
+    # Sort instruments alphabetically
+    rtm_data.sort(key=lambda x: x["instrument"])
+
     return {
         "category": "commodities",
-        "data": sorted_rtm_data,
+        "data": rtm_data,
         "total_instruments": len(commodities)
     }
 
@@ -678,7 +672,8 @@ async def get_positions():
             "total_positions": 0,
             "error": "OANDA API not configured"
         }
-    
+
+    logger.info("Fetching open positions...")
     open_positions = get_open_positions()
     
     if not open_positions:
@@ -689,9 +684,8 @@ async def get_positions():
         }
     
     positions_data = []
-    
+
     for position in open_positions:
-        logger.debug(f"Processing position: {position}")
         try:
             symbol = position.get('instrument')
             
@@ -699,16 +693,16 @@ async def get_positions():
                 logger.warning(f"No instrument found in position data")
                 continue
             
-            # Get RTM values for this instrument (both H1 and H4)
+            # Get RTM values for this instrument (H1 and D1 timeframes)
             rtm_result = calculate_rtm_values_for_symbol(symbol)
-            
+
             # Check if we have long or short positions (or both)
             long_data = position.get('long', {})
             short_data = position.get('short', {})
-            
+
             long_units = float(long_data.get('units', '0'))
             short_units = float(short_data.get('units', '0'))
-            
+
             # Handle long position
             if long_units != 0:
                 long_pnl = float(long_data.get('unrealizedPL', '0'))
@@ -719,22 +713,32 @@ async def get_positions():
                     "unrealized_pnl": long_pnl,
                     "rtm_h1_20": rtm_result.get("rtm_h1_20", [0] * 6),
                     "rtm_h1_34": rtm_result.get("rtm_h1_34", [0] * 6),
+                    "rtm_d1_20": rtm_result.get("rtm_d1_20", [0] * 20),
+                    "rtm_d1_34": rtm_result.get("rtm_d1_34", [0] * 20),
+                    "daily_condition": rtm_result.get("daily_condition", "Analysis Unavailable"),
+                    "daily_reasoning": rtm_result.get("daily_reasoning", "No reasoning available"),
+                    "daily_analyzed_at": rtm_result.get("daily_analyzed_at", datetime.now().isoformat()),
                     "last_updated": datetime.now().isoformat(),
-                    "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34")) else "Failed to fetch RTM data"
+                    "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34") and rtm_result.get("rtm_d1_20") and rtm_result.get("rtm_d1_34")) else "Failed to fetch RTM data"
                 })
-            
-            # Handle short position  
+
+            # Handle short position
             if short_units != 0:
                 short_pnl = float(short_data.get('unrealizedPL', '0'))
                 positions_data.append({
                     "instrument": symbol,
-                    "direction": "Short", 
+                    "direction": "Short",
                     "units": abs(short_units),
                     "unrealized_pnl": short_pnl,
                     "rtm_h1_20": rtm_result.get("rtm_h1_20", [0] * 6),
                     "rtm_h1_34": rtm_result.get("rtm_h1_34", [0] * 6),
+                    "rtm_d1_20": rtm_result.get("rtm_d1_20", [0] * 20),
+                    "rtm_d1_34": rtm_result.get("rtm_d1_34", [0] * 20),
+                    "daily_condition": rtm_result.get("daily_condition", "Analysis Unavailable"),
+                    "daily_reasoning": rtm_result.get("daily_reasoning", "No reasoning available"),
+                    "daily_analyzed_at": rtm_result.get("daily_analyzed_at", datetime.now().isoformat()),
                     "last_updated": datetime.now().isoformat(),
-                    "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34")) else "Failed to fetch RTM data"
+                    "error": None if (rtm_result.get("rtm_h1_20") and rtm_result.get("rtm_h1_34") and rtm_result.get("rtm_d1_20") and rtm_result.get("rtm_d1_34")) else "Failed to fetch RTM data"
                 })
             
             # If neither long nor short has units, log it
@@ -744,13 +748,13 @@ async def get_positions():
         except Exception as e:
             logger.error(f"Error processing position for {position.get('instrument', 'unknown')}: {e}")
             continue
-    
-    # Sort positions by bias and direction changes
-    sorted_positions = sort_instruments_by_bias_and_direction_change(positions_data)
-    
+
+    # Sort positions alphabetically by instrument
+    positions_data.sort(key=lambda x: x["instrument"])
+
     return {
         "category": "positions",
-        "data": sorted_positions,
+        "data": positions_data,
         "total_positions": len(positions_data)
     }
 

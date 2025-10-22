@@ -6,3 +6,5 @@ pandas
 numpy
 google-cloud-storage
 openpyxl
+anthropic
+google-genai
